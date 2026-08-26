@@ -1,12 +1,7 @@
-const {
-  Client,
-  GatewayIntentBits,
-  EmbedBuilder,
-  PermissionFlagsBits,
-  SlashCommandBuilder,
-} = require("discord.js");
+const { Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits, REST, Routes, SlashCommandBuilder } = require("discord.js");
 
 const token = process.env.DISCORD_TOKEN;
+const GUILD_ID = "1541124583606714491";
 const WELCOME_CHANNEL_ID = "1541163863641300992";
 
 if (!token) {
@@ -33,7 +28,7 @@ function createWelcomeEmbed(member) {
     .setFooter({ text: "𝙑𝙖𝙚𝙡𝙞𝙭 • Welcome System" });
 }
 
-// Automatic welcome
+// Automatic welcome on member join
 client.on("guildMemberAdd", async (member) => {
   try {
     const channel = member.guild.channels.cache.get(WELCOME_CHANNEL_ID);
@@ -53,36 +48,35 @@ client.on("guildMemberAdd", async (member) => {
   }
 });
 
-// /testwelcome
+// Register /testwelcome command
 const testWelcomeCommand = new SlashCommandBuilder()
   .setName("testwelcome")
   .setDescription("Test the Welcome System");
 
-client.once("ready", async (client) => {
+client.once("ready", async () => {
   console.log(`✅ ${client.user.tag} is ONLINE!`);
   console.log(`🆔 Bot ID: ${client.user.id}`);
 
   try {
-    const guild = client.guilds.cache.first();
+    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
-    if (guild) {
-      await guild.commands.create(testWelcomeCommand);
-      console.log("✅ /testwelcome registered.");
-    }
+    await rest.put(
+      Routes.applicationGuildCommands(client.user.id, GUILD_ID),
+      { body: [testWelcomeCommand.toJSON()] }
+    );
+
+    console.log("✅ /testwelcome registered successfully.");
   } catch (error) {
-    console.error("❌ Command registration error:", error);
+    console.error("❌ Failed to register /testwelcome:", error);
   }
 });
 
+// Handle /testwelcome command
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName !== "testwelcome") return;
 
-  if (
-    !interaction.memberPermissions?.has(
-      PermissionFlagsBits.ManageGuild
-    )
-  ) {
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
     await interaction.reply({
       content: "❌ You need Manage Server permission.",
       ephemeral: true,
@@ -91,12 +85,11 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   try {
-    const channel =
-      interaction.guild.channels.cache.get(WELCOME_CHANNEL_ID);
+    const channel = interaction.guild.channels.cache.get(WELCOME_CHANNEL_ID);
 
     if (!channel?.isTextBased()) {
       await interaction.reply({
-        content: "❌ Welcome channel was not found.",
+        content: "❌ Welcome channel not found.",
         ephemeral: true,
       });
       return;
