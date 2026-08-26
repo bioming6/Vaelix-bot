@@ -10,8 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
+      - name: Checkout latest code
         uses: actions/checkout@v4
+        with:
+          ref: main
       
       - name: Set up Node.js 24
         uses: actions/setup-node@v4
