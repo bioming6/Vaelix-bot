@@ -2,38 +2,41 @@ name: Discord Bot Online
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   start-bot:
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Verify files exist
-        run: |
-          echo "=== Repository Contents ==="
-          ls -la
-          echo "=== package.json ==="
-          cat package.json
-          echo "=== index.js ==="
-          cat index.js
-      
-      - name: Set up Node.js 24
+
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
-      
+          node-version: "24"
+
+      - name: Verify required files
+        run: |
+          test -f package.json || {
+            echo "❌ package.json is missing."
+            exit 1
+          }
+
+          test -f index.js || {
+            echo "❌ index.js is missing."
+            exit 1
+          }
+
+          echo "✅ Required files found."
+
       - name: Install dependencies
         run: npm install
-      
+
       - name: Start Discord bot
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-        run: node index.js
+        run: npm start
