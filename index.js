@@ -22,8 +22,13 @@ const TOKEN = process.env.DISCORD_TOKEN;
 
 const GUILD_ID = "1541124583606714491";
 
-const TICKET_CATEGORY_ID = "1541250932610965644";
+// 🎫 Ticket panel channel
+const TICKET_CHANNEL_ID = "1541250932610965644";
+
+// 🛠️ Support channel
 const SUPPORT_CHANNEL_ID = "1541660720280895508";
+
+// 👋 Welcome channel
 const WELCOME_CHANNEL_ID = "1541163863641300992";
 
 // =====================================================
@@ -68,17 +73,27 @@ function createWelcomeEmbed(member) {
     });
 }
 
-// =====================================================
-// WELCOME EVENT
-// =====================================================
+// Prevent duplicate welcome messages inside one process
+const welcomeSent = new Set();
 
 client.on("guildMemberAdd", async member => {
   if (member.guild.id !== GUILD_ID) return;
 
+  // Prevent duplicate event handling
+  if (welcomeSent.has(member.id)) return;
+
+  welcomeSent.add(member.id);
+
+  // Automatically remove lock after 10 minutes
+  setTimeout(() => {
+    welcomeSent.delete(member.id);
+  }, 10 * 60 * 1000);
+
   try {
-    const channel = await member.guild.channels.fetch(
-      WELCOME_CHANNEL_ID
-    );
+    const channel =
+      await member.guild.channels.fetch(
+        WELCOME_CHANNEL_ID
+      );
 
     if (
       !channel ||
@@ -86,7 +101,7 @@ client.on("guildMemberAdd", async member => {
       !channel.isSendable()
     ) {
       console.error(
-        "❌ Welcome channel is unavailable."
+        "❌ Welcome channel unavailable."
       );
       return;
     }
@@ -104,93 +119,39 @@ client.on("guildMemberAdd", async member => {
   } catch (error) {
     console.error(
       "❌ Welcome error:",
-      error
+      error.message
     );
   }
 });
 
 // =====================================================
-// TICKET PANEL CHANNEL
-// =====================================================
-
-async function getTicketPanelChannel(guild) {
-
-  const category = await guild.channels.fetch(
-    TICKET_CATEGORY_ID
-  );
-
-  if (
-    !category ||
-    category.type !== ChannelType.GuildCategory
-  ) {
-    throw new Error(
-      `ID ${TICKET_CATEGORY_ID} is not a Category.`
-    );
-  }
-
-  let panel = guild.channels.cache.find(
-    channel =>
-      channel.parentId === TICKET_CATEGORY_ID &&
-      channel.name === "🎫・create-ticket" &&
-      channel.type === ChannelType.GuildText
-  );
-
-  if (panel) {
-    return panel;
-  }
-
-  panel = await guild.channels.create({
-    name: "🎫・create-ticket",
-    type: ChannelType.GuildText,
-    parent: TICKET_CATEGORY_ID,
-
-    permissionOverwrites: [
-      {
-        id: guild.roles.everyone.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.ReadMessageHistory
-        ],
-        deny: [
-          PermissionFlagsBits.SendMessages
-        ]
-      },
-
-      {
-        id: client.user.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.EmbedLinks
-        ]
-      }
-    ]
-  });
-
-  console.log(
-    "✅ Created #🎫・create-ticket"
-  );
-
-  return panel;
-}
-
-// =====================================================
 // TICKET PANEL
 // =====================================================
 
-async function setupTicketPanel(guild) {
+async function setupTicketPanel() {
 
-  const panel =
-    await getTicketPanelChannel(guild);
+  const channel =
+    await client.channels.fetch(
+      TICKET_CHANNEL_ID
+    );
+
+  if (
+    !channel ||
+    channel.type !== ChannelType.GuildText
+  ) {
+    throw new Error(
+      "TICKET_CHANNEL_ID must be a normal text channel."
+    );
+  }
 
   const messages =
-    await panel.messages.fetch({
-      limit: 50
+    await channel.messages.fetch({
+      limit: 100
     });
 
-  const exists =
-    messages.some(message =>
+  // Don't create multiple panels
+  const existingPanel =
+    messages.find(message =>
       message.author.id === client.user.id &&
       message.components?.some(row =>
         row.components?.some(component =>
@@ -200,9 +161,9 @@ async function setupTicketPanel(guild) {
       )
     );
 
-  if (exists) {
+  if (existingPanel) {
     console.log(
-      "✅ Ticket GUI already exists."
+      "✅ Ticket panel already exists."
     );
     return;
   }
@@ -212,16 +173,16 @@ async function setupTicketPanel(guild) {
       .setColor(0x7c3aed)
       .setTitle("🎫 Vaelix Support")
       .setDescription(
-        "Need help?\n\n" +
+        "**Need help?**\n\n" +
         "Click **Create Ticket** below.\n\n" +
         "📝 Describe your problem\n" +
         "🔒 Your ticket will be private\n" +
-        "🤖 Vaelix Support will receive your request"
+        "🤖 Vaelix will send your request to Support"
       )
-      .setTimestamp()
       .setFooter({
         text: "Vaelix Support System"
-      });
+      })
+      .setTimestamp();
 
   const button =
     new ButtonBuilder()
@@ -236,7 +197,7 @@ async function setupTicketPanel(guild) {
     new ActionRowBuilder()
       .addComponents(button);
 
-  await panel.send({
+  await channel.send({
     embeds: [embed],
     components: [row]
   });
@@ -250,14 +211,35 @@ async function setupTicketPanel(guild) {
 // FIND USER TICKET
 // =====================================================
 
-function findUserTicket(guild, userId) {
+async function findUserTicket(
+  channel,
+  userId
+) {
 
-  return guild.channels.cache.find(
-    channel =>
-      channel.type === ChannelType.GuildText &&
-      channel.parentId === TICKET_CATEGORY_ID &&
-      channel.topic ===
-        `vaelix-ticket:${userId}`
+  const activeThreads =
+    await channel.threads.fetchActive();
+
+  const archivedThreads =
+    await channel.threads.fetchArchived({
+      type: "private",
+      limit: 100
+    }).catch(() => null);
+
+  const threads = [];
+
+  for (const thread of activeThreads.threads.values()) {
+    threads.push(thread);
+  }
+
+  if (archivedThreads) {
+    for (const thread of archivedThreads.threads.values()) {
+      threads.push(thread);
+    }
+  }
+
+  return threads.find(thread =>
+    thread.type === ChannelType.PrivateThread &&
+    thread.name.endsWith(`-${userId}`)
   );
 }
 
@@ -270,71 +252,74 @@ async function createTicket(
   problem
 ) {
 
-  const guild = interaction.guild;
+  const channel =
+    await client.channels.fetch(
+      TICKET_CHANNEL_ID
+    );
+
+  if (
+    !channel ||
+    channel.type !== ChannelType.GuildText
+  ) {
+    throw new Error(
+      "Ticket channel unavailable."
+    );
+  }
+
+  // ===================================================
+  // CHECK EXISTING TICKET
+  // ===================================================
 
   const existing =
-    findUserTicket(
-      guild,
+    await findUserTicket(
+      channel,
       interaction.user.id
     );
 
   if (existing) {
+
+    // Re-open archived ticket if necessary
+    if (existing.archived) {
+      await existing.setArchived(false);
+    }
+
     return {
       error:
         `❌ You already have an open ticket: ${existing}`
     };
   }
 
-  let username =
+  // ===================================================
+  // CREATE PRIVATE THREAD
+  // ===================================================
+
+  const safeUsername =
     interaction.user.username
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "")
-      .slice(0, 18);
+      .slice(0, 30) || "user";
 
-  if (!username) {
-    username = "user";
-  }
+  const thread =
+    await channel.threads.create({
+      name:
+        `ticket-${safeUsername}-${interaction.user.id}`,
 
-  const ticket =
-    await guild.channels.create({
-      name: `ticket-${username}`,
-      type: ChannelType.GuildText,
-      parent: TICKET_CATEGORY_ID,
-      topic:
-        `vaelix-ticket:${interaction.user.id}`,
+      type: ChannelType.PrivateThread,
 
-      permissionOverwrites: [
+      reason:
+        `Vaelix ticket created by ${interaction.user.tag}`,
 
-        {
-          id: guild.roles.everyone.id,
-          deny: [
-            PermissionFlagsBits.ViewChannel
-          ]
-        },
-
-        {
-          id: interaction.user.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-            PermissionFlagsBits.AttachFiles,
-            PermissionFlagsBits.EmbedLinks
-          ]
-        },
-
-        {
-          id: client.user.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-            PermissionFlagsBits.ManageChannels,
-            PermissionFlagsBits.EmbedLinks
-          ]
-        }
-      ]
+      autoArchiveDuration: 10080
     });
+
+  // Add ticket owner
+  await thread.members.add(
+    interaction.user.id
+  );
+
+  // ===================================================
+  // TICKET MESSAGE
+  // ===================================================
 
   const closeButton =
     new ButtonBuilder()
@@ -355,78 +340,85 @@ async function createTicket(
       .setTitle("🎫 Support Ticket")
       .setDescription(
         `Hello ${interaction.user}! 👋\n\n` +
-        `Your ticket has been created successfully.\n\n` +
-        `📝 **Problem**\n${problem}\n\n` +
+        `Your private support ticket has been created.\n\n` +
+        `📝 **Problem**\n` +
+        `${problem}\n\n` +
         `🤖 **Vaelix Support**\n` +
-        `Your request has been received. ` +
-        `Please wait while we process it.`
+        `Your request has been sent to the Support team.`
       )
       .setTimestamp()
       .setFooter({
         text: "Vaelix Support System"
       });
 
-  await ticket.send({
-    content: `${interaction.user}`,
+  await thread.send({
+    content:
+      `${interaction.user}`,
     embeds: [embed],
     components: [row]
   });
 
   // ===================================================
-  // SUPPORT CHANNEL
+  // SUPPORT NOTIFICATION
   // ===================================================
 
   const support =
-    await guild.channels.fetch(
+    await client.channels.fetch(
       SUPPORT_CHANNEL_ID
     );
 
   if (
-    support &&
-    support.type === ChannelType.GuildText &&
-    support.isSendable()
+    !support ||
+    support.type !== ChannelType.GuildText ||
+    !support.isSendable()
   ) {
-
-    const supportEmbed =
-      new EmbedBuilder()
-        .setColor(0x7c3aed)
-        .setTitle("🎫 New Support Ticket")
-        .addFields(
-          {
-            name: "👤 User",
-            value:
-              `${interaction.user}\n` +
-              `ID: \`${interaction.user.id}\``
-          },
-          {
-            name: "🎫 Ticket",
-            value: `${ticket}`
-          },
-          {
-            name: "📝 Problem",
-            value: problem.slice(0, 1024)
-          }
-        )
-        .setTimestamp()
-        .setFooter({
-          text: "Vaelix Support"
-        });
-
-    await support.send({
-      embeds: [supportEmbed]
-    });
-
-    console.log(
-      "✅ Ticket sent to Support."
-    );
-  } else {
     console.error(
       "❌ Support channel unavailable."
     );
+
+    return {
+      channel: thread,
+      warning:
+        "Ticket created, but Support notification failed."
+    };
   }
 
+  const supportEmbed =
+    new EmbedBuilder()
+      .setColor(0x7c3aed)
+      .setTitle("🎫 New Support Ticket")
+      .addFields(
+        {
+          name: "👤 User",
+          value:
+            `${interaction.user}\n` +
+            `ID: \`${interaction.user.id}\``
+        },
+        {
+          name: "🎫 Ticket",
+          value: `${thread}`
+        },
+        {
+          name: "📝 Problem",
+          value:
+            problem.slice(0, 1024)
+        }
+      )
+      .setTimestamp()
+      .setFooter({
+        text: "Vaelix Support"
+      });
+
+  await support.send({
+    embeds: [supportEmbed]
+  });
+
+  console.log(
+    `✅ Ticket created for ${interaction.user.tag}`
+  );
+
   return {
-    channel: ticket
+    channel: thread
   };
 }
 
@@ -439,7 +431,7 @@ client.on(
   async interaction => {
 
     // =================================================
-    // CREATE TICKET
+    // CREATE TICKET BUTTON
     // =================================================
 
     if (
@@ -480,13 +472,15 @@ client.on(
           .addComponents(input)
       );
 
-      await interaction.showModal(modal);
+      await interaction.showModal(
+        modal
+      );
 
       return;
     }
 
     // =================================================
-    // MODAL
+    // TICKET MODAL
     // =================================================
 
     if (
@@ -513,15 +507,25 @@ client.on(
           );
 
         if (result.error) {
+
           await interaction.editReply({
-            content: result.error
+            content:
+              result.error
           });
+
           return;
         }
 
+        let message =
+          `✅ Ticket created: ${result.channel}`;
+
+        if (result.warning) {
+          message +=
+            `\n\n⚠️ ${result.warning}`;
+        }
+
         await interaction.editReply({
-          content:
-            `✅ Ticket created: ${result.channel}`
+          content: message
         });
 
       } catch (error) {
@@ -541,7 +545,7 @@ client.on(
     }
 
     // =================================================
-    // CLOSE
+    // CLOSE TICKET
     // =================================================
 
     if (
@@ -550,20 +554,18 @@ client.on(
         "vaelix_close_ticket"
     ) {
 
-      const channel =
+      const thread =
         interaction.channel;
 
       if (
-        !channel ||
-        channel.type !== ChannelType.GuildText ||
-        !channel.topic?.startsWith(
-          "vaelix-ticket:"
-        )
+        !thread ||
+        thread.type !==
+          ChannelType.PrivateThread
       ) {
 
         await interaction.reply({
           content:
-            "❌ This is not a ticket.",
+            "❌ This is not a Vaelix ticket.",
           ephemeral: true
         });
 
@@ -575,8 +577,24 @@ client.on(
           "🔒 Closing ticket in 5 seconds..."
       });
 
-      setTimeout(() => {
-        channel.delete().catch(() => {});
+      setTimeout(async () => {
+
+        try {
+
+          await thread.delete();
+
+          console.log(
+            `🗑️ Ticket deleted: ${thread.name}`
+          );
+
+        } catch (error) {
+
+          console.error(
+            "❌ Failed to delete ticket:",
+            error.message
+          );
+        }
+
       }, 5000);
 
       return;
@@ -610,7 +628,7 @@ client.on(
       try {
 
         const channel =
-          await interaction.guild.channels.fetch(
+          await client.channels.fetch(
             WELCOME_CHANNEL_ID
           );
 
@@ -624,8 +642,6 @@ client.on(
           );
         }
 
-        // FIXED:
-        // createWelcomeEmbed, not welcomeEmbed
         await channel.send({
           embeds: [
             createWelcomeEmbed(
@@ -636,24 +652,22 @@ client.on(
 
         await interaction.reply({
           content:
-            "✅ Welcome test sent successfully!",
+            "✅ Welcome test sent!",
           ephemeral: true
         });
 
       } catch (error) {
 
         console.error(
-          "❌ /welcometest error:",
+          "❌ Welcome test error:",
           error
         );
 
-        if (!interaction.replied) {
-          await interaction.reply({
-            content:
-              "❌ Failed to send welcome.",
-            ephemeral: true
-          });
-        }
+        await interaction.reply({
+          content:
+            "❌ Failed to send welcome.",
+          ephemeral: true
+        });
       }
 
       return;
@@ -665,129 +679,142 @@ client.on(
 // READY
 // =====================================================
 
-client.once("ready", async () => {
-
-  console.log(
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  );
-
-  console.log(
-    `🟢 ${client.user.tag} ONLINE`
-  );
-
-  console.log(
-    `🆔 ${client.user.id}`
-  );
-
-  console.log(
-    `🏠 Servers: ${client.guilds.cache.size}`
-  );
-
-  console.log(
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  );
-
-  try {
-
-    const guild =
-      await client.guilds.fetch(
-        GUILD_ID
-      );
-
-    // Verify category
-    const category =
-      await guild.channels.fetch(
-        TICKET_CATEGORY_ID
-      );
-
-    if (
-      !category ||
-      category.type !== ChannelType.GuildCategory
-    ) {
-      throw new Error(
-        `TICKET_CATEGORY_ID ${TICKET_CATEGORY_ID} is not a Category.`
-      );
-    }
-
-    // Verify support
-    const support =
-      await guild.channels.fetch(
-        SUPPORT_CHANNEL_ID
-      );
-
-    if (
-      !support ||
-      support.type !== ChannelType.GuildText
-    ) {
-      throw new Error(
-        `SUPPORT_CHANNEL_ID ${SUPPORT_CHANNEL_ID} is not a text channel.`
-      );
-    }
-
-    await setupTicketPanel(guild);
+client.once(
+  "ready",
+  async () => {
 
     console.log(
-      "✅ Ticket system ready."
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     );
 
-  } catch (error) {
-
-    console.error(
-      "❌ Ticket system setup failed:",
-      error.message
+    console.log(
+      `🟢 ${client.user.tag} ONLINE`
     );
-  }
 
-  // ===================================================
-  // REGISTER /welcometest
-  // ===================================================
+    console.log(
+      `🆔 ${client.user.id}`
+    );
 
-  try {
+    console.log(
+      `🏠 Servers: ${client.guilds.cache.size}`
+    );
 
-    const rest =
-      new REST({
-        version: "10"
-      }).setToken(TOKEN);
+    console.log(
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
 
-    await rest.put(
-      Routes.applicationGuildCommands(
-        client.user.id,
-        GUILD_ID
-      ),
-      {
-        body: [
-          {
-            name: "welcometest",
-            description:
-              "Test the Welcome System"
-          }
-        ]
+    // =================================================
+    // VERIFY CHANNELS
+    // =================================================
+
+    try {
+
+      const ticketChannel =
+        await client.channels.fetch(
+          TICKET_CHANNEL_ID
+        );
+
+      const supportChannel =
+        await client.channels.fetch(
+          SUPPORT_CHANNEL_ID
+        );
+
+      if (
+        !ticketChannel ||
+        ticketChannel.type !==
+          ChannelType.GuildText
+      ) {
+        throw new Error(
+          `Ticket ID ${TICKET_CHANNEL_ID} is not a text channel.`
+        );
       }
-    );
 
-    console.log(
-      "✅ /welcometest registered."
-    );
+      if (
+        !supportChannel ||
+        supportChannel.type !==
+          ChannelType.GuildText
+      ) {
+        throw new Error(
+          `Support ID ${SUPPORT_CHANNEL_ID} is not a text channel.`
+        );
+      }
 
-  } catch (error) {
+      console.log(
+        "✅ Ticket channel verified."
+      );
 
+      console.log(
+        "✅ Support channel verified."
+      );
+
+      await setupTicketPanel();
+
+      console.log(
+        "✅ Ticket system ready."
+      );
+
+    } catch (error) {
+
+      console.error(
+        "❌ Ticket system error:",
+        error.message
+      );
+    }
+
+    // =================================================
+    // REGISTER SLASH COMMAND
+    // =================================================
+
+    try {
+
+      const rest =
+        new REST({
+          version: "10"
+        }).setToken(TOKEN);
+
+      await rest.put(
+        Routes.applicationGuildCommands(
+          client.user.id,
+          GUILD_ID
+        ),
+        {
+          body: [
+            {
+              name: "welcometest",
+              description:
+                "Test the Welcome System"
+            }
+          ]
+        }
+      );
+
+      console.log(
+        "✅ /welcometest registered."
+      );
+
+    } catch (error) {
+
+      console.error(
+        "❌ Slash command registration failed:",
+        error.message
+      );
+    }
+  }
+);
+
+// =====================================================
+// ERROR HANDLING
+// =====================================================
+
+client.on(
+  "error",
+  error => {
     console.error(
-      "❌ Slash command registration failed:",
-      error.message
+      "❌ Discord Client Error:",
+      error
     );
   }
-});
-
-// =====================================================
-// ERRORS
-// =====================================================
-
-client.on("error", error => {
-  console.error(
-    "❌ Discord Client Error:",
-    error
-  );
-});
+);
 
 process.on(
   "unhandledRejection",
