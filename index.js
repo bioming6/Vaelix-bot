@@ -97,10 +97,9 @@ client.on("guildMemberAdd", async member => {
       channel.type !== ChannelType.GuildText ||
       !channel.isSendable()
     ) {
-      console.error(
-        "❌ Welcome channel unavailable."
+      throw new Error(
+        "Welcome channel unavailable or not sendable."
       );
-      return;
     }
 
     await channel.send({
@@ -145,6 +144,12 @@ async function setupTicketPanel() {
   ) {
     throw new Error(
       "TICKET_CHANNEL_ID must be a text channel."
+    );
+  }
+
+  if (!channel.isSendable()) {
+    throw new Error(
+      "Bot cannot send messages in ticket channel."
     );
   }
 
@@ -219,20 +224,45 @@ async function findUserTicket(
   userId
 ) {
 
+  // Check active threads
   const active =
     await channel.threads.fetchActive();
 
   for (const thread of active.threads.values()) {
 
     if (
-      thread.type ===
-        ChannelType.PrivateThread &&
-      thread.name.endsWith(
-        `-${userId}`
-      )
+      thread.type === ChannelType.PrivateThread &&
+      thread.name.endsWith(`-${userId}`)
     ) {
       return thread;
     }
+  }
+
+  // Check archived private threads
+  try {
+
+    const archived =
+      await channel.threads.fetchArchived({
+        type: "private",
+        limit: 100
+      });
+
+    for (const thread of archived.threads.values()) {
+
+      if (
+        thread.type === ChannelType.PrivateThread &&
+        thread.name.endsWith(`-${userId}`)
+      ) {
+        return thread;
+      }
+    }
+
+  } catch (error) {
+
+    console.error(
+      "⚠️ Could not check archived tickets:",
+      error.message
+    );
   }
 
   return null;
@@ -256,10 +286,9 @@ async function sendSupportNotification(embed) {
       support.type !== ChannelType.GuildText ||
       !support.isSendable()
     ) {
-      console.error(
-        "❌ Support channel unavailable."
+      throw new Error(
+        "Support channel unavailable."
       );
-      return;
     }
 
     await support.send({
@@ -298,6 +327,12 @@ async function createTicket(
     );
   }
 
+  if (!channel.isSendable()) {
+    throw new Error(
+      "Bot cannot send messages in ticket channel."
+    );
+  }
+
   // ===================================================
   // CHECK EXISTING TICKET
   // ===================================================
@@ -309,9 +344,9 @@ async function createTicket(
     );
 
   if (existing) {
-
     return {
-      error: true
+      error: true,
+      thread: existing
     };
   }
 
@@ -333,14 +368,18 @@ async function createTicket(
       type:
         ChannelType.PrivateThread,
 
-      autoArchiveDuration:
-        10080,
+      autoArchiveDuration: 10080,
+
+      invitable: false,
 
       reason:
         `Vaelix ticket created by ${interaction.user.tag}`
     });
 
-  // Add ticket owner
+  // ===================================================
+  // ADD OWNER
+  // ===================================================
+
   await thread.members.add(
     interaction.user.id
   );
@@ -380,14 +419,13 @@ async function createTicket(
       });
 
   await thread.send({
-    content:
-      `${interaction.user}`,
+    content: `${interaction.user}`,
     embeds: [ticketEmbed],
     components: [row]
   });
 
   // ===================================================
-  // IMPORTANT SUPPORT NOTIFICATION
+  // SUPPORT NOTIFICATION
   // ===================================================
 
   const supportEmbed =
@@ -403,13 +441,11 @@ async function createTicket(
         },
         {
           name: "🎫 Ticket",
-          value:
-            `${thread}`
+          value: `${thread}`
         },
         {
           name: "📝 Problem",
-          value:
-            problem.slice(0, 1024)
+          value: problem.slice(0, 1024)
         }
       )
       .setTimestamp()
@@ -492,6 +528,15 @@ client.on(
           "❌ Modal error:",
           error.message
         );
+
+        if (!interaction.replied && !interaction.deferred) {
+          try {
+            await interaction.reply({
+              content: "❌ Unable to open the ticket form.",
+              ephemeral: true
+            });
+          } catch {}
+        }
       }
 
       return;
@@ -507,12 +552,30 @@ client.on(
         "vaelix_ticket_modal"
     ) {
 
+      /*
+       * IMPORTANT:
+       * Discord requires every interaction to be
+       * acknowledged within a few seconds.
+       *
+       * We acknowledge silently with deferReply.
+       * No visible message is sent.
+       */
+
       try {
+
+        await interaction.deferReply({
+          ephemeral: true
+        });
 
         const problem =
           interaction.fields.getTextInputValue(
             "ticket_problem"
-          );
+          ).trim();
+
+        if (!problem || problem.length < 5) {
+          await interaction.deleteReply().catch(() => {});
+          return;
+        }
 
         const result =
           await createTicket(
@@ -520,16 +583,22 @@ client.on(
             problem
           );
 
-        // IMPORTANT:
-        // No ephemeral reply.
-        // No "You can only see this message".
-        // No "Ticket created" notification.
-
         if (result.error) {
+
           console.log(
             `⚠️ ${interaction.user.tag} already has a ticket.`
           );
+
+          await interaction.deleteReply().catch(() => {});
+          return;
         }
+
+        /*
+         * Delete the acknowledgement immediately.
+         * The user gets no "Ticket created" message.
+         */
+
+        await interaction.deleteReply().catch(() => {});
 
       } catch (error) {
 
@@ -538,7 +607,9 @@ client.on(
           error
         );
 
-        // Do not send unnecessary channel messages.
+        try {
+          await interaction.deleteReply().catch(() => {});
+        } catch {}
       }
 
       return;
@@ -565,10 +636,19 @@ client.on(
         return;
       }
 
+      // Only allow members of the ticket to close it
+      const isMember =
+        thread.members.cache.has(
+          interaction.user.id
+        );
+
+      if (!isMember) {
+        return;
+      }
+
       const ticketName =
         thread.name;
 
-      // Get ticket owner from thread name
       const match =
         ticketName.match(
           /-(\d{17,20})$/
@@ -577,7 +657,7 @@ client.on(
       const ownerId =
         match ? match[1] : null;
 
-      let ownerText =
+      const ownerText =
         ownerId
           ? `<@${ownerId}>`
           : "Unknown User";
@@ -595,14 +675,22 @@ client.on(
               name: "👤 User",
               value:
                 `${ownerText}\n` +
-                (ownerId
-                  ? `ID: \`${ownerId}\``
-                  : "ID: Unknown")
+                (
+                  ownerId
+                    ? `ID: \`${ownerId}\``
+                    : "ID: Unknown"
+                )
             },
             {
               name: "🎫 Ticket",
               value:
                 `\`${ticketName}\``
+            },
+            {
+              name: "🔒 Closed By",
+              value:
+                `${interaction.user}\n` +
+                `ID: \`${interaction.user.id}\``
             }
           )
           .setTimestamp()
@@ -614,7 +702,10 @@ client.on(
         closeEmbed
       );
 
-      // Delete without sending a message
+      // =================================================
+      // DELETE TICKET
+      // =================================================
+
       setTimeout(async () => {
 
         try {
@@ -679,7 +770,17 @@ client.on(
           ]
         });
 
-        // No ephemeral response.
+        /*
+         * ACK the slash command silently.
+         * Then remove the acknowledgement.
+         */
+
+        await interaction.deferReply({
+          ephemeral: true
+        });
+
+        await interaction.deleteReply()
+          .catch(() => {});
 
       } catch (error) {
 
