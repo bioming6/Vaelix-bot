@@ -1,0 +1,1031 @@
+const {
+  Client,
+  GatewayIntentBits,
+  ChannelType,
+  PermissionFlagsBits,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  REST,
+  Routes,
+  MessageFlags
+} = require("discord.js");
+
+const fs = require("fs");
+const path = require("path");
+
+// =====================================================
+// CONFIG
+// =====================================================
+
+const TOKEN = process.env.DISCORD_TOKEN;
+
+const GUILD_ID = "1541124583606714491";
+
+const TICKET_CHANNEL_ID = "1541250932610965644";
+const SUPPORT_CHANNEL_ID = "1541660720280895508";
+const WELCOME_CHANNEL_ID = "1541163863641300992";
+
+// Your level channel
+const LEVEL_CHANNEL_ID = "1541200966290776235";
+
+// =====================================================
+// TOKEN
+// =====================================================
+
+if (!TOKEN) {
+  console.error("DISCORD_TOKEN is missing.");
+  process.exit(1);
+}
+
+// =====================================================
+// CLIENT
+// =====================================================
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
+});
+
+// =====================================================
+// LEVEL SYSTEM
+// =====================================================
+
+const LEVEL_FILE = path.join(__dirname, "levels.json");
+
+// XP cooldown: 60 seconds per user
+const XP_COOLDOWN = 60 * 1000;
+
+const xpCooldowns = new Map();
+
+// Create levels.json if it does not exist
+if (!fs.existsSync(LEVEL_FILE)) {
+  fs.writeFileSync(
+    LEVEL_FILE,
+    JSON.stringify({}, null, 2)
+  );
+}
+
+function loadLevels() {
+  try {
+    const data = fs.readFileSync(
+      LEVEL_FILE,
+      "utf8"
+    );
+
+    return JSON.parse(data);
+  } catch (error) {
+    console.error(
+      "Level database could not be loaded:",
+      error.message
+    );
+
+    return {};
+  }
+}
+
+function saveLevels(data) {
+  try {
+    fs.writeFileSync(
+      LEVEL_FILE,
+      JSON.stringify(data, null, 2)
+    );
+  } catch (error) {
+    console.error(
+      "Level database could not be saved:",
+      error.message
+    );
+  }
+}
+
+const levels = loadLevels();
+
+// =====================================================
+// LEVEL CALCULATIONS
+// =====================================================
+
+// XP required for a specific level.
+//
+// Level 1 -> 100 XP
+// Level 2 -> 200 XP
+// Level 3 -> 300 XP
+// etc.
+//
+// You can make leveling harder later by changing this.
+
+function xpRequired(level) {
+  return level * 100;
+}
+
+// Calculate level from total XP
+function calculateLevel(xp) {
+  let level = 0;
+  let remainingXP = xp;
+
+  while (
+    remainingXP >= xpRequired(level + 1)
+  ) {
+    remainingXP -= xpRequired(level + 1);
+    level++;
+  }
+
+  return level;
+}
+
+// Get information about the user's current level
+function getLevelInfo(xp) {
+  const level = calculateLevel(xp);
+
+  let xpUsed = 0;
+
+  for (let i = 1; i <= level; i++) {
+    xpUsed += xpRequired(i);
+  }
+
+  const currentLevelXP =
+    xp - xpUsed;
+
+  const needed =
+    xpRequired(level + 1);
+
+  return {
+    level,
+    currentXP: currentLevelXP,
+    neededXP: needed
+  };
+}
+
+// =====================================================
+// XP BAR
+// =====================================================
+
+function createXPBar(current, required) {
+  const totalBlocks = 10;
+
+  const percentage =
+    Math.max(
+      0,
+      Math.min(
+        1,
+        current / required
+      )
+    );
+
+  const filled = Math.floor(
+    percentage * totalBlocks
+  );
+
+  const empty =
+    totalBlocks - filled;
+
+  return (
+    "█".repeat(filled) +
+    "░".repeat(empty)
+  );
+}
+
+// =====================================================
+// GET USER DATA
+// =====================================================
+
+function getUserData(userId) {
+  if (!levels[userId]) {
+    levels[userId] = {
+      xp: 0
+    };
+  }
+
+  return levels[userId];
+}
+
+// =====================================================
+// ADD XP
+// =====================================================
+
+async function addXP(message) {
+  if (!message.guild) return;
+  if (message.guild.id !== GUILD_ID) return;
+
+  // Ignore bots
+  if (message.author.bot) return;
+
+  const userId = message.author.id;
+
+  // XP cooldown
+  const now = Date.now();
+
+  const lastXP =
+    xpCooldowns.get(userId) || 0;
+
+  if (
+    now - lastXP <
+    XP_COOLDOWN
+  ) {
+    return;
+  }
+
+  xpCooldowns.set(
+    userId,
+    now
+  );
+
+  const userData =
+    getUserData(userId);
+
+  const oldLevel =
+    calculateLevel(userData.xp);
+
+  // Random XP between 1 and 10
+  const earnedXP =
+    Math.floor(
+      Math.random() * 10
+    ) + 1;
+
+  userData.xp += earnedXP;
+
+  const newLevel =
+    calculateLevel(userData.xp);
+
+  saveLevels(levels);
+
+  // Level-up
+  if (newLevel > oldLevel) {
+    try {
+      await message.channel.send(
+        `${message.author} reached Level ${newLevel}.`
+      );
+    } catch (error) {
+      console.error(
+        "Level-up message error:",
+        error.message
+      );
+    }
+  }
+}
+
+// =====================================================
+// MESSAGE XP LISTENER
+// =====================================================
+
+client.on(
+  "messageCreate",
+  async message => {
+    try {
+      await addXP(message);
+    } catch (error) {
+      console.error(
+        "XP system error:",
+        error
+      );
+    }
+  }
+);
+
+// =====================================================
+// RANK EMBED
+// =====================================================
+
+function createRankEmbed(
+  member
+) {
+  const userData =
+    getUserData(member.id);
+
+  const info =
+    getLevelInfo(
+      userData.xp
+    );
+
+  const bar =
+    createXPBar(
+      info.currentXP,
+      info.neededXP
+    );
+
+  return new EmbedBuilder()
+    .setColor(0x7c3aed)
+    .setTitle("Vaelix Rank")
+    .setThumbnail(
+      member.user.displayAvatarURL({
+        extension: "png",
+        size: 256
+      })
+    )
+    .addFields(
+      {
+        name: "Member",
+        value: `${member}`,
+        inline: true
+      },
+      {
+        name: "Level",
+        value: `${info.level}`,
+        inline: true
+      },
+      {
+        name: "Total XP",
+        value: `${userData.xp}`,
+        inline: true
+      },
+      {
+        name: "Progress",
+        value:
+          `${bar}\n` +
+          `${info.currentXP} / ${info.neededXP} XP`
+      },
+      {
+        name: "Next Level",
+        value:
+          `${info.neededXP - info.currentXP} XP remaining`
+      }
+    )
+    .setTimestamp()
+    .setFooter({
+      text: "Vaelix Level System"
+    });
+}
+
+// =====================================================
+// WELCOME
+// =====================================================
+
+const welcomeLock = new Set();
+
+function createWelcomeEmbed(member) {
+  return new EmbedBuilder()
+    .setColor(0x7c3aed)
+    .setTitle("Welcome!")
+    .setDescription(
+      `Welcome ${member} to **${member.guild.name}**!\n\n` +
+      `We're happy to have you here!\n\n` +
+      `Member #${member.guild.memberCount}\n\n` +
+      `Enjoy your stay!`
+    )
+    .setThumbnail(
+      member.user.displayAvatarURL({
+        extension: "png",
+        size: 256
+      })
+    )
+    .setTimestamp()
+    .setFooter({
+      text: "Vaelix • Welcome System"
+    });
+}
+
+client.on(
+  "guildMemberAdd",
+  async member => {
+    if (member.guild.id !== GUILD_ID) {
+      return;
+    }
+
+    if (welcomeLock.has(member.id)) {
+      return;
+    }
+
+    welcomeLock.add(member.id);
+
+    try {
+      const channel =
+        await client.channels.fetch(
+          WELCOME_CHANNEL_ID
+        );
+
+      if (
+        !channel ||
+        channel.type !==
+          ChannelType.GuildText ||
+        !channel.isSendable()
+      ) {
+        console.error(
+          "Welcome channel unavailable."
+        );
+        return;
+      }
+
+      await channel.send({
+        embeds: [
+          createWelcomeEmbed(member)
+        ]
+      });
+
+    } catch (error) {
+      console.error(
+        "Welcome error:",
+        error.message
+      );
+
+    } finally {
+      setTimeout(
+        () => {
+          welcomeLock.delete(
+            member.id
+          );
+        },
+        10 * 60 * 1000
+      );
+    }
+  }
+);
+
+// =====================================================
+// TICKET PANEL
+// =====================================================
+
+async function setupTicketPanel() {
+  const channel =
+    await client.channels.fetch(
+      TICKET_CHANNEL_ID
+    );
+
+  if (
+    !channel ||
+    channel.type !== ChannelType.GuildText
+  ) {
+    throw new Error(
+      "TICKET_CHANNEL_ID must be a text channel."
+    );
+  }
+
+  const messages =
+    await channel.messages.fetch({
+      limit: 100
+    });
+
+  const existingPanel =
+    messages.find(
+      message =>
+        message.author.id ===
+          client.user.id &&
+        message.components?.some(
+          row =>
+            row.components?.some(
+              component =>
+                component.customId ===
+                "vaelix_create_ticket"
+            )
+        )
+    );
+
+  if (existingPanel) {
+    console.log(
+      "Ticket GUI already exists."
+    );
+    return;
+  }
+
+  const embed =
+    new EmbedBuilder()
+      .setColor(0x7c3aed)
+      .setTitle("Vaelix Support")
+      .setDescription(
+        "**Need help?**\n\n" +
+        "Click **Create Ticket** below.\n\n" +
+        "Describe your problem\n" +
+        "Your ticket will be private\n" +
+        "Vaelix Support will receive your request"
+      )
+      .setFooter({
+        text: "Vaelix Support System"
+      })
+      .setTimestamp();
+
+  const button =
+    new ButtonBuilder()
+      .setCustomId(
+        "vaelix_create_ticket"
+      )
+      .setLabel("Create Ticket")
+      .setStyle(
+        ButtonStyle.Primary
+      );
+
+  const row =
+    new ActionRowBuilder()
+      .addComponents(button);
+
+  await channel.send({
+    embeds: [embed],
+    components: [row]
+  });
+
+  console.log(
+    "Ticket GUI created."
+  );
+}
+
+// =====================================================
+// FIND USER TICKET
+// =====================================================
+
+async function findUserTicket(
+  channel,
+  userId
+) {
+  const active =
+    await channel.threads.fetchActive();
+
+  for (
+    const thread of
+    active.threads.values()
+  ) {
+    if (
+      thread.type ===
+        ChannelType.PrivateThread &&
+      thread.name.endsWith(
+        `-${userId}`
+      )
+    ) {
+      return thread;
+    }
+  }
+
+  return null;
+}
+
+// =====================================================
+// SUPPORT NOTIFICATION
+// =====================================================
+
+async function sendSupportNotification(
+  embed
+) {
+  try {
+    const support =
+      await client.channels.fetch(
+        SUPPORT_CHANNEL_ID
+      );
+
+    if (
+      !support ||
+      support.type !==
+        ChannelType.GuildText ||
+      !support.isSendable()
+    ) {
+      console.error(
+        "Support channel unavailable."
+      );
+      return;
+    }
+
+    await support.send({
+      embeds: [embed]
+    });
+
+  } catch (error) {
+    console.error(
+      "Support notification error:",
+      error.message
+    );
+  }
+}
+
+// =====================================================
+// CREATE TICKET
+// =====================================================
+
+async function createTicket(
+  interaction,
+  problem
+) {
+  const channel =
+    await client.channels.fetch(
+      TICKET_CHANNEL_ID
+    );
+
+  if (
+    !channel ||
+    channel.type !== ChannelType.GuildText
+  ) {
+    throw new Error(
+      "Ticket channel unavailable."
+    );
+  }
+
+  const existing =
+    await findUserTicket(
+      channel,
+      interaction.user.id
+    );
+
+  if (existing) {
+    return null;
+  }
+
+  const username =
+    interaction.user.username
+      .toLowerCase()
+      .replace(
+        /[^a-z0-9]/g,
+        ""
+      )
+      .slice(0, 18) ||
+    "user";
+
+  const thread =
+    await channel.threads.create({
+      name:
+        `ticket-${username}-${interaction.user.id}`,
+      type:
+        ChannelType.PrivateThread,
+      invitable: false,
+      autoArchiveDuration: 10080,
+      reason:
+        `Vaelix ticket for ${interaction.user.tag}`
+    });
+
+  await thread.members.add(
+    interaction.user.id
+  );
+
+  const closeButton =
+    new ButtonBuilder()
+      .setCustomId(
+        "vaelix_close_ticket"
+      )
+      .setLabel("Close Ticket")
+      .setStyle(
+        ButtonStyle.Danger
+      );
+
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        closeButton
+      );
+
+  const ticketEmbed =
+    new EmbedBuilder()
+      .setColor(0x7c3aed)
+      .setTitle("Support Ticket")
+      .setDescription(
+        `Hello ${interaction.user}!\n\n` +
+        `Your private support ticket has been created.\n\n` +
+        `**Problem**\n` +
+        `${problem}\n\n` +
+        `**Vaelix Support**\n` +
+        `Your request has been received.`
+      )
+      .setTimestamp()
+      .setFooter({
+        text: "Vaelix Support System"
+      });
+
+  await thread.send({
+    content:
+      `${interaction.user}`,
+    embeds: [ticketEmbed],
+    components: [row]
+  });
+
+  const supportEmbed =
+    new EmbedBuilder()
+      .setColor(0x7c3aed)
+      .setTitle("New Ticket")
+      .addFields(
+        {
+          name: "User",
+          value:
+            `${interaction.user}\n` +
+            `ID: \`${interaction.user.id}\``
+        },
+        {
+          name: "Ticket",
+          value: `${thread}`
+        },
+        {
+          name: "Problem",
+          value:
+            problem.slice(0, 1024)
+        }
+      )
+      .setTimestamp()
+      .setFooter({
+        text: "Vaelix Support"
+      });
+
+  await sendSupportNotification(
+    supportEmbed
+  );
+
+  return thread;
+}
+
+// =====================================================
+// INTERACTIONS
+// =====================================================
+
+client.on(
+  "interactionCreate",
+  async interaction => {
+
+    // =================================================
+    // /rank
+    // =================================================
+
+    if (
+      interaction.isChatInputCommand() &&
+      interaction.commandName === "rank"
+    ) {
+      try {
+        const target =
+          interaction.options.getMember(
+            "user"
+          ) ||
+          interaction.member;
+
+        const embed =
+          createRankEmbed(
+            target
+          );
+
+        await interaction.reply({
+          embeds: [embed]
+        });
+
+      } catch (error) {
+        console.error(
+          "Rank command error:",
+          error
+        );
+
+        if (!interaction.replied) {
+          await interaction.reply({
+            content:
+              "Unable to display the rank.",
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+      }
+
+      return;
+    }
+
+    // =================================================
+    // /level
+    // =================================================
+
+    if (
+      interaction.isChatInputCommand() &&
+      interaction.commandName === "level"
+    ) {
+
+      // Only allow /level in the level channel
+      if (
+        interaction.channelId !==
+        LEVEL_CHANNEL_ID
+      ) {
+        await interaction.reply({
+          content:
+            `Use /level in <#${LEVEL_CHANNEL_ID}>.`,
+          flags:
+            MessageFlags.Ephemeral
+        });
+
+        return;
+      }
+
+      try {
+        const target =
+          interaction.options.getMember(
+            "user"
+          ) ||
+          interaction.member;
+
+        const embed =
+          createRankEmbed(
+            target
+          );
+
+        await interaction.reply({
+          embeds: [embed]
+        });
+
+      } catch (error) {
+        console.error(
+          "Level command error:",
+          error
+        );
+
+        if (!interaction.replied) {
+          await interaction.reply({
+            content:
+              "Unable to display the level.",
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+      }
+
+      return;
+    }
+
+    // =================================================
+    // CREATE TICKET BUTTON
+    // =================================================
+
+    if (
+      interaction.isButton() &&
+      interaction.customId ===
+        "vaelix_create_ticket"
+    ) {
+      try {
+        const modal =
+          new ModalBuilder()
+            .setCustomId(
+              "vaelix_ticket_modal"
+            )
+            .setTitle(
+              "Create a Ticket"
+            );
+
+        const input =
+          new TextInputBuilder()
+            .setCustomId(
+              "ticket_problem"
+            )
+            .setLabel(
+              "Describe your problem"
+            )
+            .setPlaceholder(
+              "Explain your problem..."
+            )
+            .setStyle(
+              TextInputStyle.Paragraph
+            )
+            .setRequired(true)
+            .setMinLength(5)
+            .setMaxLength(1000);
+
+        modal.addComponents(
+          new ActionRowBuilder()
+            .addComponents(input)
+        );
+
+        await interaction.showModal(
+          modal
+        );
+
+      } catch (error) {
+        console.error(
+          "Modal error:",
+          error.message
+        );
+      }
+
+      return;
+    }
+
+    // =================================================
+    // MODAL SUBMIT
+    // =================================================
+
+    if (
+      interaction.isModalSubmit() &&
+      interaction.customId ===
+        "vaelix_ticket_modal"
+    ) {
+      try {
+        await interaction.deferReply({
+          flags:
+            MessageFlags.Ephemeral
+        });
+
+        const problem =
+          interaction.fields.getTextInputValue(
+            "ticket_problem"
+          );
+
+        await createTicket(
+          interaction,
+          problem
+        );
+
+        await interaction
+          .deleteReply()
+          .catch(() => {});
+
+      } catch (error) {
+        console.error(
+          "Ticket creation error:",
+          error
+        );
+
+        await interaction
+          .deleteReply()
+          .catch(() => {});
+      }
+
+      return;
+    }
+
+    // =================================================
+    // CLOSE TICKET
+    // =================================================
+
+    if (
+      interaction.isButton() &&
+      interaction.customId ===
+        "vaelix_close_ticket"
+    ) {
+      const thread =
+        interaction.channel;
+
+      if (
+        !thread ||
+        thread.type !==
+          ChannelType.PrivateThread
+      ) {
+        return;
+      }
+
+      await interaction
+        .deferUpdate()
+        .catch(() => {});
+
+      const ticketName =
+        thread.name;
+
+      const match =
+        ticketName.match(
+          /-(\d{17,20})$/
+        );
+
+      const ownerId =
+        match
+          ? match[1]
+          : null;
+
+      const ownerText =
+        ownerId
+          ? `<@${ownerId}>`
+          : "Unknown User";
+
+      const closeEmbed =
+        new EmbedBuilder()
+          .setColor(0xed4245)
+          .setTitle(
+            "Ticket Closed"
+          )
+          .addFields(
+            {
+              name: "User",
+              value:
+                `${ownerText}\n` +
+                (
+                  ownerId
+                    ? `ID: \`${ownerId}\``
+                    : "ID: Unknown"
+                )
+            },
+            {
+              name: "Ticket",
+              value:
+                `\`${ticketName}\``
+            }
+          )
+          .setTimestamp()
+          .setFooter({
+            text: "Vaelix Support"
+          });
+
+      await sendSupportNotification(
+        closeEmbed
+      );
+
+      setTimeout(
+        async () => {
+          try {
+            await thread.delete(
+              "Ticket closed"
+            );
+
+            console.log(
+              `Ticket deleted: ${ticketName}`
+            );
+
+          } catch (error) {
+            console.error(
+              "Ticket deletion error:",
+              error.message
+            );
+          }
+        },
+        1000
+      );
+
+      return;
+    }
+
+    // =================================================
+    // /wel
