@@ -15,7 +15,105 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name:name: Vaelix Discord Bot
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  start-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Start Vaelix Bot
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        run: npm startname: Discord Bot Online
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  start-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Check files
+        run: |
+          echo "Checking repository..."
+          ls -la
+          test -f package.json
+          test -f index.js
+          echo "package.json found"
+          echo "index.js found"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Start Discord Bot
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        run: npm startname: Discord Bot Online
+
+on:
+  workflow_dispatch:
+
+jobs:
+  start-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Check files
+        run: |
+          echo "Checking repository..."
+          ls -la
+          test -f package.json
+          test -f index.js
+          echo "✅ package.json found"
+          echo "✅ index.js found"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Start Discord Bot
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        run: npm start Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "24"
