@@ -2,10 +2,14 @@ name: Discord Bot Online
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   start-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
@@ -22,8 +26,8 @@ jobs:
           ls -la
           test -f package.json
           test -f index.js
-          echo "✅ package.json found"
-          echo "✅ index.js found"
+          echo "package.json found"
+          echo "index.js found"
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
